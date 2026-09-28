@@ -14,6 +14,7 @@ import dev.gelo.glyphprogress.glyph.GlyphProgressClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
@@ -50,6 +51,15 @@ class GlyphProgressApp : Application() {
                 }
             }
         }
+        scope.launch {
+            // A chronometer countdown or a "5 min away" ETA is only ever posted once in a
+            // while; without this, its percent would sit frozen between reposts instead of
+            // counting down like the rest of the phone's Live Update surfaces.
+            while (true) {
+                delay(TICK_INTERVAL_MS)
+                repository.tick()
+            }
+        }
     }
 
     private fun holdProcess() {
@@ -82,6 +92,7 @@ class GlyphProgressApp : Application() {
     companion object {
         const val SAMPLE_CHANNEL = "live_update_samples"
         const val HOLD_CHANNEL = "glyph_hold"
+        private const val TICK_INTERVAL_MS = 20_000L
 
         @Volatile
         var instance: GlyphProgressApp? = null

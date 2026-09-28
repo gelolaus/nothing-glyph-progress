@@ -98,6 +98,7 @@ data class BoardResult(
     val board: Board,
     val baselines: Map<String, Int>,
     val lastPercents: Map<String, Int>,
+    val contentSignatures: Map<String, String> = emptyMap(),
 )
 
 object LiveUpdateEngine {
@@ -107,13 +108,20 @@ object LiveUpdateEngine {
         policy: Policy = Policy(),
         baselines: Map<String, Int> = emptyMap(),
         lastPercents: Map<String, Int> = emptyMap(),
+        contentSignatures: Map<String, String> = emptyMap(),
         nowMillis: Long,
     ): BoardResult {
         val nextBaselines = linkedMapOf<String, Int>()
         val nextLast = linkedMapOf<String, Int>()
+        val nextSignatures = linkedMapOf<String, String>()
         val tracks = ArrayList<GlyphTrack>()
         for (snapshot in snapshots) {
-            if (!isCandidate(snapshot, policy)) continue
+            // Tracked for every ongoing notification, candidate or not, so a status icon
+            // that later starts actually changing can be picked up under matchAnyOngoing.
+            val signature = contentSignature(snapshot)
+            val hasMoved = contentSignatures[snapshot.key]?.let { it != signature } ?: false
+            nextSignatures[snapshot.key] = signature
+            if (!isCandidate(snapshot, policy, hasMoved)) continue
             val origin = originOf(snapshot)
             val resolved = resolve(
                 snapshot = snapshot,
@@ -150,10 +158,11 @@ object LiveUpdateEngine {
             board = Board(tracks = ordered, activeKey = active?.key),
             baselines = nextBaselines,
             lastPercents = nextLast,
+            contentSignatures = nextSignatures,
         )
     }
 
-    fun isCandidate(snapshot: NotificationSnapshot, policy: Policy): Boolean {
+    fun isCandidate(snapshot: NotificationSnapshot, policy: Policy, hasMoved: Boolean = false): Boolean {
         if (snapshot.isInternal || snapshot.isGroupSummary || snapshot.hasMediaSession) return false
         if (snapshot.template.contains("MediaStyle", ignoreCase = true)) return false
         if (snapshot.packageName in policy.ignoredPackages) return false
@@ -165,8 +174,13 @@ object LiveUpdateEngine {
         // Colorized is a real platform requirement for *system* promotion, but it says
         // nothing about whether a plain ongoing notification is worth showing on the
         // Glyph, so the generic tier below no longer excludes it.
-        if (policy.matchAnyOngoing) return true
-        return hasStandardSignal(snapshot)
+        if (hasStandardSignal(snapshot)) return true
+        // "Follow anything ongoing" is meant for a moving progress bar this app can't
+        // otherwise parse, not for the many *static* ongoing notifications Android uses
+        // for persistent status (Bluetooth, VPN, Bedtime Mode, a paired device's connection
+        // state, ...). Those never change their own content, so only accept a signal-less
+        // ongoing notification once it has actually been observed to change.
+        return policy.matchAnyOngoing && hasMoved
     }
 
     private fun resolve(
@@ -286,6 +300,19 @@ object LiveUpdateEngine {
     private fun textFields(snapshot: NotificationSnapshot): List<String> =
         listOf(snapshot.shortText, snapshot.title, snapshot.text, snapshot.bigText, snapshot.infoText) +
             snapshot.textLines
+
+    /** A cheap fingerprint of everything that would make a notification look "moved". */
+    private fun contentSignature(snapshot: NotificationSnapshot): String = buildString {
+        append(snapshot.title).append('\u0001')
+        append(snapshot.text).append('\u0001')
+        append(snapshot.subText).append('\u0001')
+        append(snapshot.shortText).append('\u0001')
+        append(snapshot.bigText).append('\u0001')
+        append(snapshot.infoText).append('\u0001')
+        append(snapshot.textLines.joinToString("\u0002")).append('\u0001')
+        append(snapshot.progress).append('\u0001')
+        append(snapshot.indeterminate)
+    }
 
     private fun originOf(snapshot: NotificationSnapshot): TrackOrigin = when {
         snapshot.promotedOngoing || snapshot.requestedPromotedOngoing -> TrackOrigin.Promoted

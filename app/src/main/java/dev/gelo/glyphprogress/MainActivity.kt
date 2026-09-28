@@ -319,7 +319,7 @@ private fun ProgressScreen() {
                     Column(Modifier.weight(1f).padding(end = 16.dp)) {
                         Text("Follow anything ongoing", color = Paper, fontSize = 16.sp, fontWeight = FontWeight.Medium)
                         Text(
-                            "Match every ongoing notification, even with no percent or ETA. Catches uploads and transfers this app can't otherwise read, but is noisier.",
+                            "Once an ongoing notification with no percent or ETA is seen to actually change, follow it too. Catches uploads and transfers this app can't otherwise read. A status icon that never changes (Bluetooth, VPN, Bedtime Mode) stays off the Glyph.",
                             color = Ash,
                             fontSize = 13.sp,
                             lineHeight = 18.sp,
@@ -530,7 +530,9 @@ private fun figure(phase: GlyphPhase?, percent: Int, empty: Boolean): String = w
 }
 
 private fun phaseLabel(track: GlyphTrack): String = when (track.phase) {
-    GlyphPhase.Indeterminate -> "Searching"
+    // "Searching" only fit the rideshare case this was written for; a timer, a call, or a
+    // status notification caught by "Follow anything ongoing" isn't searching for anything.
+    GlyphPhase.Indeterminate -> "Active"
     GlyphPhase.Complete -> "Done"
     GlyphPhase.Progress -> "${track.percent}%"
 }

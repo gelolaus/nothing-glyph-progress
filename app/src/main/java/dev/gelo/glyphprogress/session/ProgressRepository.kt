@@ -19,6 +19,7 @@ class ProgressRepository(context: Context) {
     private val ignored = MutableStateFlow(prefs.getStringSet(KEY_IGNORED, emptySet()).orEmpty())
     private var baselines: Map<String, Int> = emptyMap()
     private var lastPercents: Map<String, Int> = emptyMap()
+    private var contentSignatures: Map<String, String> = emptyMap()
 
     private val _board = MutableStateFlow(Board())
     val board: StateFlow<Board> = _board.asStateFlow()
@@ -97,6 +98,15 @@ class ProgressRepository(context: Context) {
 
     fun ignoredPackages(): Set<String> = ignored.value
 
+    /**
+     * Re-derives the board against the current clock with no new notification event.
+     * A chronometer countdown or a "5 min away" ETA only ticks visually because the app
+     * calls this periodically; the source notification itself may not repost for minutes.
+     */
+    fun tick() {
+        if (snapshots.value.isNotEmpty()) recompute()
+    }
+
     private fun recompute() {
         val result = LiveUpdateEngine.board(
             snapshots = snapshots.value,
@@ -108,10 +118,12 @@ class ProgressRepository(context: Context) {
             ),
             baselines = baselines,
             lastPercents = lastPercents,
+            contentSignatures = contentSignatures,
             nowMillis = System.currentTimeMillis(),
         )
         baselines = result.baselines
         lastPercents = result.lastPercents
+        contentSignatures = result.contentSignatures
         _board.value = result.board
     }
 

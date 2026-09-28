@@ -335,20 +335,61 @@ class LiveUpdateEngineTest {
     }
 
     @Test
-    fun matchAnyOngoingCatchesANotificationWithNoSignalAtAll() {
-        val off = LiveUpdateEngine.board(
-            listOf(snap(isOngoing = true, title = "Backing up photos")),
+    fun matchAnyOngoingIgnoresAStaticStatusNotification() {
+        // A Bluetooth/VPN/Bedtime-Mode style notification that never changes its own
+        // content should never light up, even with the catch-everything switch on.
+        val policy = Policy(matchAnyOngoing = true)
+        val first = LiveUpdateEngine.board(
+            listOf(snap(key = "bt", isOngoing = true, title = "Bluetooth connected")),
+            pinnedKey = null,
+            policy = policy,
+            nowMillis = now,
+        )
+        assertNull(first.board.active)
+        val stillSame = LiveUpdateEngine.board(
+            listOf(snap(key = "bt", isOngoing = true, title = "Bluetooth connected")),
+            pinnedKey = null,
+            policy = policy,
+            contentSignatures = first.contentSignatures,
+            nowMillis = now,
+        )
+        assertNull(stillSame.board.active)
+    }
+
+    @Test
+    fun matchAnyOngoingCatchesASignalLessNotificationOnceItActuallyChanges() {
+        val policy = Policy(matchAnyOngoing = true)
+        val first = LiveUpdateEngine.board(
+            listOf(snap(key = "xfer", isOngoing = true, title = "Backing up photos")),
+            pinnedKey = null,
+            policy = policy,
+            nowMillis = now,
+        )
+        assertNull(first.board.active)
+        val changed = LiveUpdateEngine.board(
+            listOf(snap(key = "xfer", isOngoing = true, title = "Backing up photos: 120 of 400")),
+            pinnedKey = null,
+            policy = policy,
+            contentSignatures = first.contentSignatures,
+            nowMillis = now,
+        )
+        assertEquals(GlyphPhase.Indeterminate, changed.board.active!!.phase)
+    }
+
+    @Test
+    fun matchAnyOngoingOffNeverMatchesASignalLessNotificationEvenIfItChanges() {
+        val first = LiveUpdateEngine.board(
+            listOf(snap(key = "xfer", isOngoing = true, title = "Backing up photos")),
             pinnedKey = null,
             nowMillis = now,
         )
-        assertNull(off.board.active)
-        val on = LiveUpdateEngine.board(
-            listOf(snap(isOngoing = true, title = "Backing up photos")),
+        val changed = LiveUpdateEngine.board(
+            listOf(snap(key = "xfer", isOngoing = true, title = "Backing up photos: 120 of 400")),
             pinnedKey = null,
-            policy = Policy(matchAnyOngoing = true),
+            contentSignatures = first.contentSignatures,
             nowMillis = now,
         )
-        assertEquals(GlyphPhase.Indeterminate, on.board.active!!.phase)
+        assertNull(changed.board.active)
     }
 
     @Test

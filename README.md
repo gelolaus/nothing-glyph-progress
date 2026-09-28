@@ -2,7 +2,7 @@
 
 Reads **any** Android Live Update on the phone and draws it on the Nothing Glyph, the same idea as the system Glyph Progress feature. Nothing's own version only follows a short partner list. This app does not. It watches the notification shade.
 
-Android 16 (API 36) introduced Live Updates. Android 17 (API 37) keeps that contract and adds `MetricStyle` plus semantic colors. A notification qualifies when the system sets `FLAG_PROMOTED_ONGOING`, when the app requested promotion, or when it uses `ProgressStyle` / `MetricStyle`. Ordinary ongoing progress (the older `setProgress` form, and ride notifications that only say "8 min away") is included too, with a switch to turn that off. A third switch, **Follow anything ongoing**, goes further still: it lights up for *any* ongoing notification, even one with no percent, ETA, or recognizable phrase, so a plain upload or transfer notification (a Messenger video upload, a file sync, anything with a moving progress bar the parser doesn't otherwise recognize) still drives the Glyph. Media players, group summaries, downloads, and Play Store installs are always skipped, even with that switch on.
+Android 16 (API 36) introduced Live Updates. Android 17 (API 37) keeps that contract and adds `MetricStyle` plus semantic colors. A notification qualifies when the system sets `FLAG_PROMOTED_ONGOING`, when the app requested promotion, or when it uses `ProgressStyle` / `MetricStyle`. Ordinary ongoing progress (the older `setProgress` form, and ride notifications that only say "8 min away") is included too, with a switch to turn that off. A third switch, **Follow anything ongoing**, goes further still: once an ongoing notification with no percent, ETA, or recognizable phrase is actually seen to *change* (a plain upload or transfer notification the parser can't otherwise read), it drives the Glyph too. A static status icon that never changes its own content — Bluetooth connected, VPN active, Bedtime Mode paused, a paired device's connection state — never lights up, even with that switch on, because it never gets the one thing the switch is looking for: proof of movement. Media players, group summaries, downloads, and Play Store installs are always skipped, even with that switch on.
 
 The light level is a completion percent: empty at 0, full at 100.
 
@@ -13,6 +13,8 @@ The light level is a completion percent: empty at 0, full at 100.
 - `ProgressStyle` milestones (`android.progressPoints`) show up as tick marks on the on-screen bar.
 - An API 37 semantic style (`caution`/`danger`) on a segment, point, or metric shows a matching label on screen and makes the Glyph pulse every few seconds on top of the steady level, so an alert-worthy update stands out even face down.
 - A `MetricStyle` Live Update with no progress bar (Android 17) still shows its metric labels as the detail line.
+- The board re-derives itself every 20 seconds even with no new notification event, so a chronometer countdown or a "5 min away" ETA keeps counting down between reposts instead of sitting frozen.
+- A chronometer-based countdown (a timer app whose notification updates its display client-side, without reposting) can only be read when it actually sets Android's chronometer extras (`android.showChronometer` / `android.chronometerCountDown` / `when`). Some system timer apps instead draw the countdown inside a fully custom notification view, which a listener has no reliable way to read; that shows as Active rather than a percent.
 
 ## Quick Settings tile
 
