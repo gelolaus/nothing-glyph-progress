@@ -17,6 +17,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -24,9 +25,11 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -65,6 +68,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import dev.gelo.glyphprogress.core.GlyphPhase
 import dev.gelo.glyphprogress.core.GlyphTrack
+import dev.gelo.glyphprogress.core.Semantic
 import dev.gelo.glyphprogress.demo.SampleLiveUpdate
 import dev.gelo.glyphprogress.glyph.GlyphLink
 import dev.gelo.glyphprogress.listener.LiveUpdateListenerService
@@ -98,6 +102,8 @@ private val Paper = Color(0xFFFFFFFF)
 private val Ash = Color(0xFF8E8E93)
 private val Hairline = Color(0xFF2A2A2A)
 private val Group = Color(0xFF141414)
+private val Caution = Color(0xFFFFB300)
+private val Danger = Color(0xFFFF4D4D)
 
 private val NothingColors = darkColorScheme(
     primary = Paper,
@@ -115,6 +121,7 @@ private fun ProgressScreen() {
     val board by app.repository.board.collectAsState()
     val manual by app.repository.manual.collectAsState()
     val includeStandard by app.repository.includeStandardProgress.collectAsState()
+    val matchAnyOngoing by app.repository.matchAnyOngoingProgress.collectAsState()
     val link by app.glyphs.link.collectAsState()
     var listenerOn by remember { mutableStateOf(listenerEnabled(context)) }
     var previewOpen by remember { mutableStateOf(false) }
@@ -138,6 +145,8 @@ private fun ProgressScreen() {
 
     val phase = manual?.phase ?: board.active?.phase
     val percent = manual?.percent ?: board.active?.percent ?: 0
+    val semantic = if (manual != null) Semantic.UNSPECIFIED else board.active?.semantic ?: Semantic.UNSPECIFIED
+    val milestones = if (manual != null) emptyList() else board.active?.milestoneFractions.orEmpty()
     val headline = when {
         manual != null -> "Preview"
         board.active == null -> "No Live Update"
@@ -195,12 +204,23 @@ private fun ProgressScreen() {
                     lineHeight = 108.sp,
                 )
                 Spacer(Modifier.height(20.dp))
-                Text(headline, color = Paper, fontSize = 18.sp, fontWeight = FontWeight.Medium)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(headline, color = Paper, fontSize = 18.sp, fontWeight = FontWeight.Medium)
+                    if (semantic >= Semantic.CAUTION) {
+                        Text(
+                            if (semantic >= Semantic.DANGER) "Danger" else "Caution",
+                            color = if (semantic >= Semantic.DANGER) Danger else Caution,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.padding(start = 10.dp),
+                        )
+                    }
+                }
                 if (detail.isNotBlank()) {
                     Text(detail, color = Ash, fontSize = 14.sp, modifier = Modifier.padding(top = 4.dp))
                 }
                 Spacer(Modifier.height(20.dp))
-                Strip(phase = phase, percent = percent)
+                Strip(phase = phase, percent = percent, milestones = milestones)
             }
 
             Spacer(Modifier.height(56.dp))
@@ -279,6 +299,36 @@ private fun ProgressScreen() {
                     Switch(
                         checked = includeStandard,
                         onCheckedChange = app.repository::setIncludeStandard,
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Ink,
+                            checkedTrackColor = Paper,
+                            uncheckedThumbColor = Paper,
+                            uncheckedTrackColor = Color(0xFF3A3A3A),
+                            uncheckedBorderColor = Color.Transparent,
+                            checkedBorderColor = Color.Transparent,
+                        ),
+                    )
+                }
+                Hairline()
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f).padding(end = 16.dp)) {
+                        Text("Follow anything ongoing", color = Paper, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                        Text(
+                            "Match every ongoing notification, even with no percent or ETA. Catches uploads and transfers this app can't otherwise read, but is noisier.",
+                            color = Ash,
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                    Switch(
+                        checked = matchAnyOngoing,
+                        onCheckedChange = app.repository::setMatchAnyOngoing,
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Ink,
                             checkedTrackColor = Paper,
@@ -433,24 +483,41 @@ private fun QuietAction(label: String, onClick: () -> Unit) {
 }
 
 @Composable
-private fun Strip(phase: GlyphPhase?, percent: Int) {
+private fun Strip(phase: GlyphPhase?, percent: Int, milestones: List<Float> = emptyList()) {
     val fraction = when (phase) {
         null -> 0f
         GlyphPhase.Indeterminate -> 1f
         else -> percent.coerceIn(0, 100) / 100f
     }
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
-            .height(2.dp)
-            .background(Hairline),
+            .height(6.dp),
     ) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .fillMaxWidth()
+                .height(2.dp)
+                .background(Hairline),
+        )
         if (fraction > 0f) {
             Box(
                 modifier = Modifier
+                    .align(Alignment.CenterStart)
                     .fillMaxWidth(fraction)
                     .height(2.dp)
                     .background(if (phase == GlyphPhase.Indeterminate) Color(0xFF8E8E93) else Paper),
+            )
+        }
+        milestones.forEach { position ->
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .offset(x = maxWidth * position - 0.5.dp)
+                    .width(1.dp)
+                    .height(6.dp)
+                    .background(Ink),
             )
         }
     }

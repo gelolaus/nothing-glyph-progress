@@ -11,6 +11,7 @@ import com.nothing.ketchum.GlyphMatrixManager
 import com.nothing.ketchum.GlyphMatrixObject
 import com.nothing.ketchum.GlyphMatrixUtils
 import dev.gelo.glyphprogress.core.GlyphPhase
+import dev.gelo.glyphprogress.core.Semantic
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -46,8 +47,9 @@ class GlyphProgressClient(context: Context) {
     private var matrixOpen = false
     private var matrixSize = 25
 
-    private var pending: Pair<GlyphPhase, Int>? = null
+    private var pending: Triple<GlyphPhase, Int, Int>? = null
     private var patternJob: Job? = null
+    private var pulseJob: Job? = null
     private var patternGeneration = 0
     private var started = false
     private var bound = false
@@ -57,8 +59,12 @@ class GlyphProgressClient(context: Context) {
     )
     val link: StateFlow<GlyphLink> = _link.asStateFlow()
 
-    fun show(phase: GlyphPhase, percent: Int) {
-        pending = phase to percent.coerceIn(0, 100)
+    /**
+     * @param semantic an Android `SEMANTIC_STYLE_*` int (0-4). Caution and danger layer an
+     * extra pulse on top of the steady progress level so those Live Updates stand out.
+     */
+    fun show(phase: GlyphPhase, percent: Int, semantic: Int = Semantic.UNSPECIFIED) {
+        pending = Triple(phase, percent.coerceIn(0, 100), semantic)
         ensureStarted()
         if (bound && !isOpen()) reopen()
         if (isOpen()) render()
@@ -67,6 +73,7 @@ class GlyphProgressClient(context: Context) {
     fun clear() {
         pending = null
         patternJob?.cancel()
+        pulseJob?.cancel()
         if (stripOpen) {
             runCatching { strip?.turnOff() }
             runCatching { strip?.closeSession() }
@@ -155,11 +162,31 @@ class GlyphProgressClient(context: Context) {
         val target = pending ?: return
         if (!isOpen()) return
         patternJob?.cancel()
+        pulseJob?.cancel()
         val generation = ++patternGeneration
         when (target.first) {
-            GlyphPhase.Progress -> push(target.second)
+            GlyphPhase.Progress -> {
+                push(target.second)
+                pulseIfNeeded(generation, target.third, target.second)
+            }
             GlyphPhase.Complete -> celebrate(generation)
             GlyphPhase.Indeterminate -> blink(generation)
+        }
+    }
+
+    /** A brief blackout every few seconds on top of the steady level, for caution/danger. */
+    private fun pulseIfNeeded(generation: Int, semantic: Int, level: Int) {
+        if (semantic < Semantic.CAUTION) return
+        val period = if (semantic >= Semantic.DANGER) 3_000L else 6_000L
+        pulseJob = scope.launch {
+            while (isActive && generation == patternGeneration) {
+                delay(period)
+                if (generation != patternGeneration) return@launch
+                lightsOff()
+                delay(140)
+                if (generation != patternGeneration) return@launch
+                push(level)
+            }
         }
     }
 

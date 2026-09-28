@@ -7,6 +7,7 @@ import android.content.Intent
 import android.os.Build
 import androidx.core.content.ContextCompat
 import dev.gelo.glyphprogress.core.GlyphPhase
+import dev.gelo.glyphprogress.core.Semantic
 import dev.gelo.glyphprogress.session.GlyphHoldService
 import dev.gelo.glyphprogress.session.ProgressRepository
 import dev.gelo.glyphprogress.glyph.GlyphProgressClient
@@ -35,8 +36,8 @@ class GlyphProgressApp : Application() {
             combine(repository.board, repository.manual) { board, manual ->
                 val active = board.active
                 when {
-                    manual != null -> manual.phase to manual.percent
-                    active != null -> active.phase to active.percent
+                    manual != null -> Triple(manual.phase, manual.percent, Semantic.UNSPECIFIED)
+                    active != null -> Triple(active.phase, active.percent, active.semantic)
                     else -> null
                 }
             }.collect { target ->
@@ -45,7 +46,7 @@ class GlyphProgressApp : Application() {
                     stopService(Intent(this@GlyphProgressApp, GlyphHoldService::class.java))
                 } else {
                     holdProcess()
-                    glyphs.show(target.first, target.second)
+                    glyphs.show(target.first, target.second, target.third)
                 }
             }
         }

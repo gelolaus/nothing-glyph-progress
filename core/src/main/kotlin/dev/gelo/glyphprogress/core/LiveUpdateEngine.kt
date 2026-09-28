@@ -12,6 +12,9 @@ data class NotificationSnapshot(
     val text: String = "",
     val subText: String = "",
     val shortText: String = "",
+    val bigText: String = "",
+    val infoText: String = "",
+    val textLines: List<String> = emptyList(),
     val isOngoing: Boolean = false,
     val postTimeMillis: Long = 0L,
     val promotedOngoing: Boolean = false,
@@ -21,6 +24,9 @@ data class NotificationSnapshot(
     val progressMax: Int? = null,
     val indeterminate: Boolean = false,
     val segmentLengths: List<Int> = emptyList(),
+    val progressPoints: List<Int> = emptyList(),
+    val semanticStyles: List<Int> = emptyList(),
+    val metricLabels: List<String> = emptyList(),
     val hasMediaSession: Boolean = false,
     val isGroupSummary: Boolean = false,
     val isColorized: Boolean = false,
@@ -44,6 +50,15 @@ enum class TrackOrigin {
     Standard,
 }
 
+/** Android's `Notification.SEMANTIC_STYLE_*` ints (API 37), 0 when a notification never set one. */
+object Semantic {
+    const val UNSPECIFIED = 0
+    const val INFO = 1
+    const val SAFE = 2
+    const val CAUTION = 3
+    const val DANGER = 4
+}
+
 data class GlyphTrack(
     val key: String,
     val packageName: String,
@@ -54,10 +69,13 @@ data class GlyphTrack(
     val postTimeMillis: Long,
     val confidence: Int,
     val origin: TrackOrigin,
+    val semantic: Int = Semantic.UNSPECIFIED,
+    val milestoneFractions: List<Float> = emptyList(),
 )
 
 data class Policy(
     val includeStandardProgress: Boolean = true,
+    val matchAnyOngoing: Boolean = false,
     val ignoredPackages: Set<String> = emptySet(),
     val fallbackBlockedPackages: Set<String> = DEFAULT_FALLBACK_BLOCKLIST,
 )
@@ -105,16 +123,23 @@ object LiveUpdateEngine {
             )
             resolved.baselineMinutes?.let { nextBaselines[snapshot.key] = it }
             nextLast[snapshot.key] = resolved.percent
+            val detail = snapshot.text.ifBlank {
+                snapshot.shortText.ifBlank {
+                    snapshot.subText.ifBlank { snapshot.metricLabels.joinToString(" · ") }
+                }
+            }
             tracks += GlyphTrack(
                 key = snapshot.key,
                 packageName = snapshot.packageName,
                 title = snapshot.title.ifBlank { snapshot.shortText.ifBlank { snapshot.packageName } },
-                detail = snapshot.text.ifBlank { snapshot.shortText.ifBlank { snapshot.subText } },
+                detail = detail,
                 phase = resolved.phase,
                 percent = resolved.percent.coerceIn(0, 100),
                 postTimeMillis = snapshot.postTimeMillis,
                 confidence = confidenceOf(origin),
                 origin = origin,
+                semantic = snapshot.semanticStyles.maxOrNull() ?: Semantic.UNSPECIFIED,
+                milestoneFractions = milestoneFractions(snapshot),
             )
         }
         val ordered = tracks.sortedWith(
@@ -135,8 +160,12 @@ object LiveUpdateEngine {
         if (snapshot.promotedOngoing) return true
         if (isProgressTemplate(snapshot) || isMetricTemplate(snapshot)) return true
         if (snapshot.requestedPromotedOngoing && snapshot.isOngoing && !snapshot.isColorized) return true
-        if (!policy.includeStandardProgress || !snapshot.isOngoing || snapshot.isColorized) return false
+        if (!policy.includeStandardProgress || !snapshot.isOngoing) return false
         if (snapshot.packageName in policy.fallbackBlockedPackages) return false
+        // Colorized is a real platform requirement for *system* promotion, but it says
+        // nothing about whether a plain ongoing notification is worth showing on the
+        // Glyph, so the generic tier below no longer excludes it.
+        if (policy.matchAnyOngoing) return true
         return hasStandardSignal(snapshot)
     }
 
@@ -166,7 +195,7 @@ object LiveUpdateEngine {
             val phase = if (percent >= 100) GlyphPhase.Complete else GlyphPhase.Progress
             return Resolved(phase, percent, base)
         }
-        val haystack = listOf(snapshot.shortText, snapshot.title, snapshot.text).joinToString(" ")
+        val haystack = textFields(snapshot).joinToString(" ")
         if (COMPLETE_PHRASE.containsMatchIn(haystack)) {
             return Resolved(GlyphPhase.Complete, 100, null)
         }
@@ -188,8 +217,25 @@ object LiveUpdateEngine {
         return kotlin.math.round(100.0 * progress / max).toInt().coerceIn(0, 100)
     }
 
+    /** Positions of `android.progressPoints` as fractions along the bar, for tick marks. */
+    private fun milestoneFractions(snapshot: NotificationSnapshot): List<Float> {
+        if (snapshot.progressPoints.isEmpty()) return emptyList()
+        val segmentMax = snapshot.segmentLengths.filter { it > 0 }.fold(0L) { acc, length -> acc + length }
+        val max = when {
+            segmentMax > 0L -> segmentMax
+            (snapshot.progressMax ?: 0) > 0 -> (snapshot.progressMax ?: 0).toLong()
+            else -> return emptyList()
+        }
+        // The platform never draws a point at 0 or at max; match that here.
+        return snapshot.progressPoints
+            .filter { it > 0 && it < max }
+            .map { (it.toFloat() / max.toFloat()).coerceIn(0f, 1f) }
+            .distinct()
+            .sorted()
+    }
+
     private fun textPercent(snapshot: NotificationSnapshot): Int? {
-        for (field in listOf(snapshot.shortText, snapshot.title, snapshot.text)) {
+        for (field in textFields(snapshot)) {
             val match = PERCENT_TEXT.find(field) ?: continue
             return match.groupValues[1].toInt().coerceIn(0, 100)
         }
@@ -197,7 +243,7 @@ object LiveUpdateEngine {
     }
 
     private fun findMinutes(snapshot: NotificationSnapshot, nowMillis: Long): Int? {
-        for (field in listOf(snapshot.shortText, snapshot.title, snapshot.text)) {
+        for (field in textFields(snapshot)) {
             textMinutes(field)?.let { return it }
         }
         if (snapshot.usesChronometer && snapshot.chronometerCountdown && snapshot.whenMillis > nowMillis) {
@@ -231,15 +277,15 @@ object LiveUpdateEngine {
         if (snapshot.progress != null) return true
         if (snapshot.segmentLengths.isNotEmpty()) return true
         if (textPercent(snapshot) != null) return true
-        if (textMinutes(snapshot.shortText) != null ||
-            textMinutes(snapshot.title) != null ||
-            textMinutes(snapshot.text) != null
-        ) {
-            return true
-        }
-        val haystack = listOf(snapshot.shortText, snapshot.title, snapshot.text).joinToString(" ")
+        if (textFields(snapshot).any { textMinutes(it) != null }) return true
+        val haystack = textFields(snapshot).joinToString(" ")
         return COMPLETE_PHRASE.containsMatchIn(haystack) || INDETERMINATE_PHRASE.containsMatchIn(haystack)
     }
+
+    /** Every free-text field worth scanning, highest-priority first. */
+    private fun textFields(snapshot: NotificationSnapshot): List<String> =
+        listOf(snapshot.shortText, snapshot.title, snapshot.text, snapshot.bigText, snapshot.infoText) +
+            snapshot.textLines
 
     private fun originOf(snapshot: NotificationSnapshot): TrackOrigin = when {
         snapshot.promotedOngoing || snapshot.requestedPromotedOngoing -> TrackOrigin.Promoted

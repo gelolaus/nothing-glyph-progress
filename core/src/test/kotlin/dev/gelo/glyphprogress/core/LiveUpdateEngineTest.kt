@@ -273,13 +273,22 @@ class LiveUpdateEngineTest {
     }
 
     @Test
-    fun colorizedProgressIsNotALiveUpdateUnlessPromoted() {
-        val hidden = LiveUpdateEngine.board(
-            listOf(snap(isOngoing = true, isColorized = true, progress = 50, progressMax = 100)),
+    fun colorizedStandardProgressIsStillPickedUpByTheGenericTier() {
+        // Colorized disqualifies *system promotion*, but a plain ongoing notification
+        // that already carries explicit progress extras (e.g. a Messenger upload) is
+        // still worth showing on the Glyph.
+        val track = only(snap(isOngoing = true, isColorized = true, progress = 50, progressMax = 100))
+        assertEquals(50, track.percent)
+    }
+
+    @Test
+    fun colorizedRequestedPromotionDoesNotQualifyOnRequestAlone() {
+        val result = LiveUpdateEngine.board(
+            listOf(snap(isOngoing = true, isColorized = true, requestedPromotedOngoing = true, title = "Ride")),
             pinnedKey = null,
             nowMillis = now,
         )
-        assertNull(hidden.board.active)
+        assertNull(result.board.active)
     }
 
     @Test
@@ -307,6 +316,107 @@ class LiveUpdateEngineTest {
         assertEquals(5, result.baselines["cal"])
     }
 
+    @Test
+    fun percentInBigTextIsFound() {
+        val track = only(snap(isOngoing = true, bigText = "Uploading, 62% done"))
+        assertEquals(62, track.percent)
+    }
+
+    @Test
+    fun percentInInfoTextIsFound() {
+        val track = only(snap(isOngoing = true, infoText = "33%"))
+        assertEquals(33, track.percent)
+    }
+
+    @Test
+    fun percentInTextLinesIsFound() {
+        val track = only(snap(isOngoing = true, textLines = listOf("File 2 of 4", "45% complete")))
+        assertEquals(45, track.percent)
+    }
+
+    @Test
+    fun matchAnyOngoingCatchesANotificationWithNoSignalAtAll() {
+        val off = LiveUpdateEngine.board(
+            listOf(snap(isOngoing = true, title = "Backing up photos")),
+            pinnedKey = null,
+            nowMillis = now,
+        )
+        assertNull(off.board.active)
+        val on = LiveUpdateEngine.board(
+            listOf(snap(isOngoing = true, title = "Backing up photos")),
+            pinnedKey = null,
+            policy = Policy(matchAnyOngoing = true),
+            nowMillis = now,
+        )
+        assertEquals(GlyphPhase.Indeterminate, on.board.active!!.phase)
+    }
+
+    @Test
+    fun matchAnyOngoingStillDropsBlocklistedAndIgnoredPackages() {
+        val result = LiveUpdateEngine.board(
+            listOf(
+                snap(key = "dl", packageName = "com.android.providers.downloads", isOngoing = true, title = "File.zip"),
+                snap(key = "ig", packageName = "com.ignored", isOngoing = true, title = "Anything"),
+            ),
+            pinnedKey = null,
+            policy = Policy(matchAnyOngoing = true, ignoredPackages = setOf("com.ignored")),
+            nowMillis = now,
+        )
+        assertTrue(result.board.tracks.isEmpty())
+    }
+
+    @Test
+    fun progressPointsBecomeMilestoneFractions() {
+        val track = only(
+            snap(
+                isOngoing = true,
+                progress = 50,
+                progressMax = 100,
+                progressPoints = listOf(25, 50, 75),
+            ),
+        )
+        assertEquals(listOf(0.25f, 0.5f, 0.75f), track.milestoneFractions)
+    }
+
+    @Test
+    fun pointsAtZeroOrMaxAreNotDrawn() {
+        val track = only(
+            snap(
+                isOngoing = true,
+                progress = 50,
+                progressMax = 100,
+                progressPoints = listOf(0, 40, 100),
+            ),
+        )
+        assertEquals(listOf(0.4f), track.milestoneFractions)
+    }
+
+    @Test
+    fun semanticStyleIsTheStrongestAcrossSegmentsAndPoints() {
+        val track = only(
+            snap(
+                isOngoing = true,
+                progress = 10,
+                progressMax = 100,
+                semanticStyles = listOf(Semantic.INFO, Semantic.DANGER, Semantic.CAUTION),
+            ),
+        )
+        assertEquals(Semantic.DANGER, track.semantic)
+    }
+
+    @Test
+    fun metricLabelsFillDetailWhenThereIsNoOtherText() {
+        val track = only(
+            snap(
+                isOngoing = true,
+                promotedOngoing = true,
+                template = "android.app.Notification\$MetricStyle",
+                metricLabels = listOf("Pace", "Distance"),
+            ),
+        )
+        assertEquals("Pace · Distance", track.detail)
+    }
+
     private fun only(snapshot: NotificationSnapshot): GlyphTrack =
         LiveUpdateEngine.board(listOf(snapshot), pinnedKey = null, nowMillis = now).board.active!!
 
@@ -316,14 +426,21 @@ class LiveUpdateEngineTest {
         title: String = "",
         text: String = "",
         shortText: String = "",
+        bigText: String = "",
+        infoText: String = "",
+        textLines: List<String> = emptyList(),
         isOngoing: Boolean = false,
         postTimeMillis: Long = 1,
         promotedOngoing: Boolean = false,
+        requestedPromotedOngoing: Boolean = false,
         template: String = "",
         progress: Int? = null,
         progressMax: Int? = null,
         indeterminate: Boolean = false,
         segmentLengths: List<Int> = emptyList(),
+        progressPoints: List<Int> = emptyList(),
+        semanticStyles: List<Int> = emptyList(),
+        metricLabels: List<String> = emptyList(),
         hasMediaSession: Boolean = false,
         isGroupSummary: Boolean = false,
         isColorized: Boolean = false,
@@ -334,14 +451,21 @@ class LiveUpdateEngineTest {
         title = title,
         text = text,
         shortText = shortText,
+        bigText = bigText,
+        infoText = infoText,
+        textLines = textLines,
         isOngoing = isOngoing,
         postTimeMillis = postTimeMillis,
         promotedOngoing = promotedOngoing,
+        requestedPromotedOngoing = requestedPromotedOngoing,
         template = template,
         progress = progress,
         progressMax = progressMax,
         indeterminate = indeterminate,
         segmentLengths = segmentLengths,
+        progressPoints = progressPoints,
+        semanticStyles = semanticStyles,
+        metricLabels = metricLabels,
         hasMediaSession = hasMediaSession,
         isGroupSummary = isGroupSummary,
         isColorized = isColorized,

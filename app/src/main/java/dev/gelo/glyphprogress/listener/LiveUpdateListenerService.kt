@@ -1,5 +1,6 @@
 package dev.gelo.glyphprogress.listener
 
+import android.content.ComponentName
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import dev.gelo.glyphprogress.GlyphProgressApp
@@ -12,6 +13,10 @@ class LiveUpdateListenerService : NotificationListenerService() {
 
     override fun onListenerDisconnected() {
         if (instance === this) instance = null
+        // Safe to call here (and only here or before onListenerConnected): asks the
+        // system to rebind us instead of waiting for its own retry schedule, so a
+        // listener killed by doze or an OEM battery rule comes back quickly.
+        requestRebind(ComponentName(this, LiveUpdateListenerService::class.java))
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
