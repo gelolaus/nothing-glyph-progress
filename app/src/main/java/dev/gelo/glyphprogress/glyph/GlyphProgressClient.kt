@@ -48,6 +48,7 @@ class GlyphProgressClient(context: Context) {
 
     private var pending: Pair<GlyphPhase, Int>? = null
     private var patternJob: Job? = null
+    private var patternGeneration = 0
     private var started = false
     private var bound = false
 
@@ -154,31 +155,41 @@ class GlyphProgressClient(context: Context) {
         val target = pending ?: return
         if (!isOpen()) return
         patternJob?.cancel()
+        val generation = ++patternGeneration
         when (target.first) {
             GlyphPhase.Progress -> push(target.second)
-            GlyphPhase.Complete -> celebrate()
-            GlyphPhase.Indeterminate -> blink()
+            GlyphPhase.Complete -> celebrate(generation)
+            GlyphPhase.Indeterminate -> blink(generation)
         }
     }
 
-    private fun celebrate() {
+    private fun celebrate(generation: Int) {
         patternJob = scope.launch {
             repeat(6) { tick ->
-                push(if (tick % 2 == 0) 100 else 0)
+                if (generation != patternGeneration) return@launch
+                if (tick % 2 == 0) push(100) else lightsOff()
                 delay(220)
             }
-            push(100)
+            if (generation == patternGeneration) push(100)
         }
     }
 
-    private fun blink() {
+    private fun blink(generation: Int) {
         patternJob = scope.launch {
-            var on = false
-            while (isActive) {
-                on = !on
-                push(if (on) 100 else 0)
-                delay(480)
+            while (isActive && generation == patternGeneration) {
+                lightsOff()
+                delay(420)
+                if (generation != patternGeneration) return@launch
+                push(100)
+                delay(420)
             }
+        }
+    }
+
+    private fun lightsOff() {
+        if (stripOpen) runCatching { strip?.turnOff() }
+        if (matrixOpen) {
+            runCatching { matrix?.setAppMatrixFrame(IntArray(matrixSize * matrixSize)) }
         }
     }
 
@@ -204,7 +215,7 @@ class GlyphProgressClient(context: Context) {
                 thickness,
                 percent,
                 true,
-                GlyphMatrixUtils.ARROW_3x2,
+                null,
             )
         }.getOrElse { fallbackBar(matrixSize, percent) }
         val framed = runCatching {
@@ -266,7 +277,7 @@ class GlyphProgressClient(context: Context) {
     private fun sessionFailure(registered: Boolean, error: Exception): String {
         val detail = error.message?.takeIf { it.isNotBlank() } ?: error.javaClass.simpleName
         return if (!registered) {
-            "Glyph register failed. On the phone run: adb shell settings put global nt_glyph_interface_debug_enable 1 ($detail)"
+            "The Glyph did not open. Keep Glyph Progress in front, then try again."
         } else {
             detail
         }

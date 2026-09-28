@@ -16,7 +16,7 @@ class GlyphHoldService : Service() {
         val notification = NotificationCompat.Builder(this, GlyphProgressApp.HOLD_CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("Glyph Progress")
-            .setContentText("Mirroring a Live Update")
+            .setContentText("Following a Live Update")
             .setOngoing(true)
             .setSilent(true)
             .addExtras(Bundle().apply { putBoolean(INTERNAL_EXTRA, true) })
