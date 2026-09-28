@@ -17,6 +17,7 @@ class ProgressRepository(context: Context) {
     private val includeStandard = MutableStateFlow(prefs.getBoolean(KEY_STANDARD, true))
     private val matchAnyOngoing = MutableStateFlow(prefs.getBoolean(KEY_ANY_ONGOING, false))
     private val ignored = MutableStateFlow(prefs.getStringSet(KEY_IGNORED, emptySet()).orEmpty())
+    private val allowedOverrides = MutableStateFlow(prefs.getStringSet(KEY_ALLOWED_OVERRIDES, emptySet()).orEmpty())
     private var baselines: Map<String, Int> = emptyMap()
     private var lastPercents: Map<String, Int> = emptyMap()
     private var contentSignatures: Map<String, String> = emptyMap()
@@ -74,9 +75,22 @@ class ProgressRepository(context: Context) {
         recompute()
     }
 
-    fun clearIgnored() {
-        ignored.value = emptySet()
-        prefs.edit().remove(KEY_IGNORED).apply()
+    /** Brings a single app the user hid back into view. */
+    fun unhide(packageName: String) {
+        val next = ignored.value - packageName
+        ignored.value = next
+        prefs.edit().putStringSet(KEY_IGNORED, next).apply()
+        recompute()
+    }
+
+    /**
+     * Lets one of the apps Nothing OS already mirrors (Uber, Zomato, Maps, Calendar) drive
+     * the Glyph too. Turning it back off is the same "Hide" action as any other app.
+     */
+    fun allow(packageName: String) {
+        val next = allowedOverrides.value + packageName
+        allowedOverrides.value = next
+        prefs.edit().putStringSet(KEY_ALLOWED_OVERRIDES, next).apply()
         recompute()
     }
 
@@ -96,8 +110,6 @@ class ProgressRepository(context: Context) {
         _manual.value = manual
     }
 
-    fun ignoredPackages(): Set<String> = ignored.value
-
     /**
      * Re-derives the board against the current clock with no new notification event.
      * A chronometer countdown or a "5 min away" ETA only ticks visually because the app
@@ -115,6 +127,7 @@ class ProgressRepository(context: Context) {
                 includeStandardProgress = includeStandard.value,
                 matchAnyOngoing = matchAnyOngoing.value,
                 ignoredPackages = ignored.value,
+                allowedOverridePackages = allowedOverrides.value,
             ),
             baselines = baselines,
             lastPercents = lastPercents,
@@ -133,5 +146,6 @@ class ProgressRepository(context: Context) {
         const val KEY_STANDARD = "include_standard"
         const val KEY_ANY_ONGOING = "match_any_ongoing"
         const val KEY_IGNORED = "ignored_packages"
+        const val KEY_ALLOWED_OVERRIDES = "allowed_override_packages"
     }
 }

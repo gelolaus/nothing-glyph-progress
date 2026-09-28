@@ -69,6 +69,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import dev.gelo.glyphprogress.core.GlyphPhase
 import dev.gelo.glyphprogress.core.GlyphTrack
 import dev.gelo.glyphprogress.core.Semantic
+import dev.gelo.glyphprogress.core.SuppressReason
 import dev.gelo.glyphprogress.demo.SampleLiveUpdate
 import dev.gelo.glyphprogress.glyph.GlyphLink
 import dev.gelo.glyphprogress.listener.LiveUpdateListenerService
@@ -271,10 +272,30 @@ private fun ProgressScreen() {
                         onHide = { app.repository.ignore(track.packageName) },
                     )
                 }
-                if (app.repository.ignoredPackages().isNotEmpty()) {
-                    Hairline()
-                    SettingRow(title = "Unhide apps", value = "", onClick = app.repository::clearIgnored)
+            }
+
+            if (board.suppressed.isNotEmpty()) {
+                Spacer(Modifier.height(32.dp))
+                SectionLabel("Off")
+                Group {
+                    board.suppressed.forEachIndexed { index, item ->
+                        if (index > 0) Hairline()
+                        val label = appLabel(context, item.packageName)
+                        val title = item.title.ifBlank { label }
+                        SuppressedRow(
+                            title = title,
+                            subtitle = if (title.equals(label, ignoreCase = true)) "" else label,
+                            reason = item.reason,
+                            onAllow = {
+                                when (item.reason) {
+                                    SuppressReason.UserHidden -> app.repository.unhide(item.packageName)
+                                    SuppressReason.DefaultDisabled -> app.repository.allow(item.packageName)
+                                }
+                            },
+                        )
+                    }
                 }
+                Footnote("Uber, Zomato, Google Maps, and Google Calendar start off because Nothing OS already mirrors them on the Glyph. Anything else with a real progress signal turns on by itself.")
             }
 
             Spacer(Modifier.height(32.dp))
@@ -469,6 +490,44 @@ private fun TrackRow(
             if (!selected) QuietAction("Use", onUse) else Text("Showing", color = Ash, fontSize = 14.sp)
             QuietAction("Hide", onHide)
         }
+    }
+}
+
+@Composable
+private fun SuppressedRow(
+    title: String,
+    subtitle: String,
+    reason: SuppressReason,
+    onAllow: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(title, color = Paper, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+            if (subtitle.isNotBlank()) {
+                Text(subtitle, color = Ash, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
+            }
+            Text(
+                when (reason) {
+                    SuppressReason.DefaultDisabled -> "Nothing OS already shows this"
+                    SuppressReason.UserHidden -> "Hidden by you"
+                },
+                color = Ash,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
+        QuietAction(
+            when (reason) {
+                SuppressReason.DefaultDisabled -> "Allow"
+                SuppressReason.UserHidden -> "Unhide"
+            },
+            onAllow,
+        )
     }
 }
 

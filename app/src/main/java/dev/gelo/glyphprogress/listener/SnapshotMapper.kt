@@ -28,6 +28,7 @@ fun StatusBarNotification.toSnapshot(): NotificationSnapshot {
         textLines = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)
             ?.map { it.toString() }
             .orEmpty(),
+        category = notification.category.orEmpty(),
         isOngoing = notification.flags and Notification.FLAG_ONGOING_EVENT != 0,
         postTimeMillis = postTime,
         promotedOngoing = isPromoted(notification),

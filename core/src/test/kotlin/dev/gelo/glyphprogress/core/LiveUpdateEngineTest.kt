@@ -262,7 +262,7 @@ class LiveUpdateEngineTest {
     }
 
     @Test
-    fun ignoredPackageIsDropped() {
+    fun ignoredPackageIsDroppedButStillReportedAsSuppressed() {
         val result = LiveUpdateEngine.board(
             listOf(snap(packageName = "com.grab", promotedOngoing = true, isOngoing = true, title = "Grab")),
             pinnedKey = null,
@@ -270,6 +270,10 @@ class LiveUpdateEngineTest {
             nowMillis = now,
         )
         assertNull(result.board.active)
+        assertTrue(result.board.tracks.isEmpty())
+        assertEquals(1, result.board.suppressed.size)
+        assertEquals(SuppressReason.UserHidden, result.board.suppressed.single().reason)
+        assertEquals("com.grab", result.board.suppressed.single().packageName)
     }
 
     @Test
@@ -393,17 +397,38 @@ class LiveUpdateEngineTest {
     }
 
     @Test
-    fun matchAnyOngoingStillDropsBlocklistedAndIgnoredPackages() {
+    fun blocklistedPackageStaysInvisibleEvenUnderMatchAnyOngoing() {
+        // Pure system noise (downloads, the Play Store) is never even reported as
+        // suppressed - there is nothing for the user to review or allow.
         val result = LiveUpdateEngine.board(
-            listOf(
-                snap(key = "dl", packageName = "com.android.providers.downloads", isOngoing = true, title = "File.zip"),
-                snap(key = "ig", packageName = "com.ignored", isOngoing = true, title = "Anything"),
-            ),
+            listOf(snap(packageName = "com.android.providers.downloads", isOngoing = true, title = "File.zip")),
             pinnedKey = null,
-            policy = Policy(matchAnyOngoing = true, ignoredPackages = setOf("com.ignored")),
+            policy = Policy(matchAnyOngoing = true),
             nowMillis = now,
         )
         assertTrue(result.board.tracks.isEmpty())
+        assertTrue(result.board.suppressed.isEmpty())
+    }
+
+    @Test
+    fun ignoredPackageStaysDroppedUnderMatchAnyOngoingOnceItMoves() {
+        val policy = Policy(matchAnyOngoing = true, ignoredPackages = setOf("com.ignored"))
+        val first = LiveUpdateEngine.board(
+            listOf(snap(key = "ig", packageName = "com.ignored", isOngoing = true, title = "Anything")),
+            pinnedKey = null,
+            policy = policy,
+            nowMillis = now,
+        )
+        val moved = LiveUpdateEngine.board(
+            listOf(snap(key = "ig", packageName = "com.ignored", isOngoing = true, title = "Anything else now")),
+            pinnedKey = null,
+            policy = policy,
+            contentSignatures = first.contentSignatures,
+            nowMillis = now,
+        )
+        assertTrue(moved.board.tracks.isEmpty())
+        assertEquals(1, moved.board.suppressed.size)
+        assertEquals(SuppressReason.UserHidden, moved.board.suppressed.single().reason)
     }
 
     @Test
@@ -446,6 +471,73 @@ class LiveUpdateEngineTest {
     }
 
     @Test
+    fun chronometerAloneIsAStandardSignal() {
+        // A call, a screen recording, a workout timer that counts *up* - no percent to
+        // compute, but Android is visibly animating it, so it deserves an Active glyph.
+        val track = only(snap(isOngoing = true, usesChronometer = true, title = "Recording"))
+        assertEquals(GlyphPhase.Indeterminate, track.phase)
+    }
+
+    @Test
+    fun progressLikeCategoryIsAStandardSignalWithNoOtherText() {
+        for (category in listOf("progress", "navigation", "call", "workout", "stopwatch", "alarm", "location_sharing")) {
+            val track = only(snap(isOngoing = true, category = category, title = "Untitled"))
+            assertEquals(GlyphPhase.Indeterminate, track.phase, "category=$category should be a signal")
+        }
+    }
+
+    @Test
+    fun statusCategoryIsNeverAStandardSignal() {
+        val result = LiveUpdateEngine.board(
+            listOf(snap(isOngoing = true, category = "status", title = "Bedtime Mode is paused")),
+            pinnedKey = null,
+            nowMillis = now,
+        )
+        assertNull(result.board.active)
+    }
+
+    @Test
+    fun statusCategoryNeverQualifiesUnderMatchAnyOngoingEvenAfterItMoves() {
+        val policy = Policy(matchAnyOngoing = true)
+        val first = LiveUpdateEngine.board(
+            listOf(snap(key = "status", isOngoing = true, category = "status", title = "Disconnected")),
+            pinnedKey = null,
+            policy = policy,
+            nowMillis = now,
+        )
+        val moved = LiveUpdateEngine.board(
+            listOf(snap(key = "status", isOngoing = true, category = "status", title = "Connected")),
+            pinnedKey = null,
+            policy = policy,
+            contentSignatures = first.contentSignatures,
+            nowMillis = now,
+        )
+        assertNull(moved.board.active)
+    }
+
+    @Test
+    fun theFourNothingPartnerAppsAreOffByDefault() {
+        for (packageName in DEFAULT_DISABLED_PACKAGES) {
+            val result = LiveUpdateEngine.board(
+                listOf(snap(packageName = packageName, promotedOngoing = true, isOngoing = true, title = "A ride")),
+                pinnedKey = null,
+                nowMillis = now,
+            )
+            assertNull(result.board.active, "$packageName should be off by default")
+            assertEquals(SuppressReason.DefaultDisabled, result.board.suppressed.single().reason)
+        }
+    }
+
+    @Test
+    fun aNothingPartnerAppCanBeAllowedBackOn() {
+        val track = only(
+            snap(packageName = "com.ubercab", promotedOngoing = true, isOngoing = true, title = "Uber"),
+            policy = Policy(allowedOverridePackages = setOf("com.ubercab")),
+        )
+        assertEquals("com.ubercab", track.packageName)
+    }
+
+    @Test
     fun metricLabelsFillDetailWhenThereIsNoOtherText() {
         val track = only(
             snap(
@@ -458,8 +550,8 @@ class LiveUpdateEngineTest {
         assertEquals("Pace · Distance", track.detail)
     }
 
-    private fun only(snapshot: NotificationSnapshot): GlyphTrack =
-        LiveUpdateEngine.board(listOf(snapshot), pinnedKey = null, nowMillis = now).board.active!!
+    private fun only(snapshot: NotificationSnapshot, policy: Policy = Policy()): GlyphTrack =
+        LiveUpdateEngine.board(listOf(snapshot), pinnedKey = null, policy = policy, nowMillis = now).board.active!!
 
     private fun snap(
         key: String = "n",
@@ -470,7 +562,10 @@ class LiveUpdateEngineTest {
         bigText: String = "",
         infoText: String = "",
         textLines: List<String> = emptyList(),
+        category: String = "",
         isOngoing: Boolean = false,
+        usesChronometer: Boolean = false,
+        chronometerCountdown: Boolean = false,
         postTimeMillis: Long = 1,
         promotedOngoing: Boolean = false,
         requestedPromotedOngoing: Boolean = false,
@@ -495,6 +590,7 @@ class LiveUpdateEngineTest {
         bigText = bigText,
         infoText = infoText,
         textLines = textLines,
+        category = category,
         isOngoing = isOngoing,
         postTimeMillis = postTimeMillis,
         promotedOngoing = promotedOngoing,
@@ -511,5 +607,7 @@ class LiveUpdateEngineTest {
         isGroupSummary = isGroupSummary,
         isColorized = isColorized,
         whenMillis = whenMillis,
+        usesChronometer = usesChronometer,
+        chronometerCountdown = chronometerCountdown,
     )
 }

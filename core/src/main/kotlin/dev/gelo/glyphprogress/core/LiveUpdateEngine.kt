@@ -15,6 +15,7 @@ data class NotificationSnapshot(
     val bigText: String = "",
     val infoText: String = "",
     val textLines: List<String> = emptyList(),
+    val category: String = "",
     val isOngoing: Boolean = false,
     val postTimeMillis: Long = 0L,
     val promotedOngoing: Boolean = false,
@@ -59,6 +60,15 @@ object Semantic {
     const val DANGER = 4
 }
 
+/** Why a genuine live-update signal isn't currently lighting the Glyph. */
+enum class SuppressReason {
+    /** The user tapped "Hide" on this app. */
+    UserHidden,
+
+    /** One of the apps Nothing OS already mirrors natively (off by default, not hidden). */
+    DefaultDisabled,
+}
+
 data class GlyphTrack(
     val key: String,
     val packageName: String,
@@ -73,13 +83,24 @@ data class GlyphTrack(
     val milestoneFractions: List<Float> = emptyList(),
 )
 
+/** A genuine live-update signal that isn't shown, and why. */
+data class SuppressedTrack(
+    val key: String,
+    val packageName: String,
+    val title: String,
+    val reason: SuppressReason,
+)
+
 data class Policy(
     val includeStandardProgress: Boolean = true,
     val matchAnyOngoing: Boolean = false,
     val ignoredPackages: Set<String> = emptySet(),
     val fallbackBlockedPackages: Set<String> = DEFAULT_FALLBACK_BLOCKLIST,
+    val defaultDisabledPackages: Set<String> = DEFAULT_DISABLED_PACKAGES,
+    val allowedOverridePackages: Set<String> = emptySet(),
 )
 
+/** Never a candidate, and never worth surfacing even as suppressed: pure system noise. */
 val DEFAULT_FALLBACK_BLOCKLIST: Set<String> = setOf(
     "com.android.providers.downloads",
     "com.android.vending",
@@ -87,9 +108,23 @@ val DEFAULT_FALLBACK_BLOCKLIST: Set<String> = setOf(
     "com.android.packageinstaller",
 )
 
+/**
+ * Nothing OS already mirrors these natively on the Glyph (the original Glyph Progress
+ * partner list, later folded into the Android 16 Live Update path). Off by default so this
+ * app doesn't fight the system for the same lights; a user who wants this app to drive them
+ * instead can allow any of these individually.
+ */
+val DEFAULT_DISABLED_PACKAGES: Set<String> = setOf(
+    "com.ubercab",
+    "com.application.zomato",
+    "com.google.android.apps.maps",
+    "com.google.android.calendar",
+)
+
 data class Board(
     val tracks: List<GlyphTrack> = emptyList(),
     val activeKey: String? = null,
+    val suppressed: List<SuppressedTrack> = emptyList(),
 ) {
     val active: GlyphTrack? get() = tracks.firstOrNull { it.key == activeKey }
 }
@@ -115,13 +150,33 @@ object LiveUpdateEngine {
         val nextLast = linkedMapOf<String, Int>()
         val nextSignatures = linkedMapOf<String, String>()
         val tracks = ArrayList<GlyphTrack>()
+        val suppressed = ArrayList<SuppressedTrack>()
         for (snapshot in snapshots) {
             // Tracked for every ongoing notification, candidate or not, so a status icon
             // that later starts actually changing can be picked up under matchAnyOngoing.
             val signature = contentSignature(snapshot)
             val hasMoved = contentSignatures[snapshot.key]?.let { it != signature } ?: false
             nextSignatures[snapshot.key] = signature
+            // No genuine progress/movement signal at all: fully invisible, same as before.
+            // This is the "don't just put every app notification here" gate.
             if (!isCandidate(snapshot, policy, hasMoved)) continue
+
+            val suppressReason = when {
+                snapshot.packageName in policy.ignoredPackages -> SuppressReason.UserHidden
+                snapshot.packageName in policy.defaultDisabledPackages &&
+                    snapshot.packageName !in policy.allowedOverridePackages -> SuppressReason.DefaultDisabled
+                else -> null
+            }
+            if (suppressReason != null) {
+                suppressed += SuppressedTrack(
+                    key = snapshot.key,
+                    packageName = snapshot.packageName,
+                    title = snapshot.title.ifBlank { snapshot.shortText.ifBlank { snapshot.packageName } },
+                    reason = suppressReason,
+                )
+                continue
+            }
+
             val origin = originOf(snapshot)
             val resolved = resolve(
                 snapshot = snapshot,
@@ -155,17 +210,24 @@ object LiveUpdateEngine {
         )
         val active = pinnedKey?.let { key -> ordered.firstOrNull { it.key == key } } ?: ordered.firstOrNull()
         return BoardResult(
-            board = Board(tracks = ordered, activeKey = active?.key),
+            board = Board(tracks = ordered, activeKey = active?.key, suppressed = suppressed),
             baselines = nextBaselines,
             lastPercents = nextLast,
             contentSignatures = nextSignatures,
         )
     }
 
+    /**
+     * Does this notification carry a genuine live-update / progress / movement signal at
+     * all, independent of whether the user or the default policy currently hides it? This
+     * is the detection gate: hiding is decided afterward, in [board].
+     */
     fun isCandidate(snapshot: NotificationSnapshot, policy: Policy, hasMoved: Boolean = false): Boolean {
         if (snapshot.isInternal || snapshot.isGroupSummary || snapshot.hasMediaSession) return false
         if (snapshot.template.contains("MediaStyle", ignoreCase = true)) return false
-        if (snapshot.packageName in policy.ignoredPackages) return false
+        // The system's own promotion decision, or a real ProgressStyle/MetricStyle
+        // template, outranks our package blocklist below - if Android decided this is a
+        // genuine Live Update, second-guessing it with a heuristic denylist is wrong.
         if (snapshot.promotedOngoing) return true
         if (isProgressTemplate(snapshot) || isMetricTemplate(snapshot)) return true
         if (snapshot.requestedPromotedOngoing && snapshot.isOngoing && !snapshot.isColorized) return true
@@ -179,8 +241,9 @@ object LiveUpdateEngine {
         // otherwise parse, not for the many *static* ongoing notifications Android uses
         // for persistent status (Bluetooth, VPN, Bedtime Mode, a paired device's connection
         // state, ...). Those never change their own content, so only accept a signal-less
-        // ongoing notification once it has actually been observed to change.
-        return policy.matchAnyOngoing && hasMoved
+        // ongoing notification once it has actually been observed to change - and never a
+        // notification Android itself categorizes as plain device/contextual status.
+        return policy.matchAnyOngoing && hasMoved && snapshot.category != CATEGORY_STATUS
     }
 
     private fun resolve(
@@ -290,6 +353,10 @@ object LiveUpdateEngine {
         if (snapshot.indeterminate) return true
         if (snapshot.progress != null) return true
         if (snapshot.segmentLengths.isNotEmpty()) return true
+        // A running chronometer (call duration, a recording, a workout) is inherently
+        // "moving" even with no percent to compute - Android itself is animating it.
+        if (snapshot.usesChronometer) return true
+        if (snapshot.category in PROGRESS_LIKE_CATEGORIES) return true
         if (textPercent(snapshot) != null) return true
         if (textFields(snapshot).any { textMinutes(it) != null }) return true
         val haystack = textFields(snapshot).joinToString(" ")
@@ -338,6 +405,20 @@ object LiveUpdateEngine {
         val phase: GlyphPhase,
         val percent: Int,
         val baselineMinutes: Int?,
+    )
+
+    // Android's Notification.CATEGORY_* string values (reference:
+    // developer.android.com/reference/android/app/Notification). Kept as plain strings
+    // because the core module has no Android dependency.
+    private const val CATEGORY_STATUS = "status"
+    private val PROGRESS_LIKE_CATEGORIES = setOf(
+        "progress",
+        "navigation",
+        "call",
+        "workout",
+        "stopwatch",
+        "alarm",
+        "location_sharing",
     )
 
     private val PERCENT_TEXT = Regex("""(?<!\d)(\d{1,3})\s*%""")
