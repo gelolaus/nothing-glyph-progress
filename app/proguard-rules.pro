@@ -1,0 +1,3 @@
+-keep class com.nothing.ketchum.** { *; }
+-keep class com.nothing.thirdparty.** { *; }
+-keep class com.nothinglondon.text.** { *; }
